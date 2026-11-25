@@ -74,7 +74,7 @@ jobs:
       # ------------------------------------------------------------------ Qt
       - name: Cache Qt
         id: cache-qt
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.QT_ROOT }}
           key: qt-${{ env.QT_VERSION }}-msvc2022_arm64-v1
@@ -87,6 +87,13 @@ jobs:
             -m qt5compat qtwebsockets qtimageformats --outputdir $env:QT_ROOT
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
+      - name: Sauver le cache Qt
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.QT_ROOT }}
+          key: ${{ steps.cache-qt.outputs.cache-primary-key }}
+
       - name: Localiser Qt
         run: |
           $qt = Get-ChildItem "$env:QT_ROOT\$env:QT_VERSION" -Directory | Where-Object Name -like "*arm64*" | Select-Object -First 1
@@ -97,7 +104,8 @@ jobs:
 
       # --------------------------------------------------------------- vcpkg
       - name: Cache vcpkg
-        uses: actions/cache@v4
+        id: cache-vcpkg
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-arm64-${{ env.VCPKG_COMMIT }}-v1
@@ -115,10 +123,17 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           "VCPKG_INST=$env:NC_VCPKG\installed\arm64-windows" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Sauver le cache vcpkg
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ steps.cache-vcpkg.outputs.cache-primary-key }}
+
       # ------------------------------------------- Bibliothèques compilées ici
       - name: Cache des dépendances compilées
         id: cache-deps
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.DEPS }}
           key: deps-${{ env.QT_VERSION }}-kf${{ env.KF_VERSION }}-qk${{ env.QTKEYCHAIN_VERSION }}-kdsa${{ env.KDSA_VERSION }}-p11${{ env.LIBP11_VERSION }}-${{ env.VCPKG_COMMIT }}-v1
@@ -180,6 +195,13 @@ jobs:
           $pc = $pc.Replace('@VERSION@', $env:LIBP11_VERSION).Replace('-lp11','-llibp11')
           Set-Content "$env:DEPS\lib\pkgconfig\libp11.pc" $pc -Encoding ascii
           Pop-Location
+
+      - name: Sauver le cache des dépendances
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.DEPS }}
+          key: ${{ steps.cache-deps.outputs.cache-primary-key }}
 
       # ------------------------------------------------------------- Outils
       - name: Installer Inkscape et Inno Setup
