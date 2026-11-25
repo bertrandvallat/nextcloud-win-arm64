@@ -104,6 +104,7 @@ jobs:
 
       - name: Dépendances vcpkg (OpenSSL, zlib, SQLite, pkgconf)
         run: |
+          $env:VCPKG_ROOT = $env:NC_VCPKG
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           git init -q $env:NC_VCPKG
           git -C $env:NC_VCPKG fetch -q --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_COMMIT
