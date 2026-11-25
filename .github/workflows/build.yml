@@ -276,6 +276,8 @@ jobs:
           # Runtime Visual C++ ARM64 (déploiement local, pas besoin de vc_redist)
           $crt = Get-ChildItem "$env:VCToolsRedistDir\arm64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
           Copy-Item "$($crt.FullName)\*.dll" $pkg -Force
+          # vcruntime140_1.dll du redist ARM64 est une copie x64 (pour l'émulation) : inutile ici
+          Remove-Item "$pkg\vcruntime140_1.dll" -ErrorAction SilentlyContinue
 
           # Nettoyage
           Get-ChildItem $pkg -Recurse -Include *.pdb,*.lib,*.exp | Remove-Item -Force
