@@ -77,14 +77,14 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.QT_ROOT }}
-          key: qt-${{ env.QT_VERSION }}-msvc2022_arm64-v1
+          key: qt-${{ env.QT_VERSION }}-msvc2022_arm64-v2
 
       - name: Installer Qt ${{ env.QT_VERSION }} ARM64
         if: steps.cache-qt.outputs.cache-hit != 'true'
         run: |
           python -m pip install "aqtinstall==$env:AQT_VERSION"
           python -m aqt install-qt windows_arm64 desktop $env:QT_VERSION win64_msvc2022_arm64 `
-            -m qt5compat qtwebsockets qtimageformats --outputdir $env:QT_ROOT
+            -m qt5compat qtwebsockets qtimageformats qtshadertools --outputdir $env:QT_ROOT
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Sauver le cache Qt
