@@ -243,6 +243,8 @@ jobs:
           $bins = @("$pkg\nextcloud.exe")
           if (Test-Path "$pkg\nextcloudcmd.exe") { $bins += "$pkg\nextcloudcmd.exe" }
           $bins += (Get-ChildItem $pkg -Filter "nextcloud*.dll").FullName
+          # windeployqt doit trouver les DLL tierces (qt6keychain, KF6Archive...) via le PATH
+          $env:PATH = "$pkg;$env:DEPS\bin;$env:VCPKG_INST\bin;$env:PATH"
           windeployqt --release --no-compiler-runtime --no-translations `
             --qmldir C:\nc\src\gui --dir $pkg @bins
           if ($LASTEXITCODE) { throw "windeployqt" }
