@@ -1,0 +1,305 @@
+# Compile le client de bureau Nextcloud nativement pour Windows ARM64
+# et produit un installateur (Inno Setup).
+name: Build Nextcloud Windows ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag Nextcloud à compiler (ex. v35.0.3)"
+        required: true
+        default: "v35.0.3"
+      release:
+        description: "Publier l'installateur dans une Release GitHub"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build.yml"
+      - "installer/**"
+      - "tools/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NC_VERSION: ${{ inputs.version || 'v35.0.3' }}
+  QT_VERSION: "6.11.2"
+  AQT_VERSION: "3.3.0"
+  KF_VERSION: "6.32.0"
+  QTKEYCHAIN_VERSION: "0.16.0"
+  KDSA_VERSION: "1.2.0"
+  LIBP11_VERSION: "0.4.21"
+  VCPKG_COMMIT: "7281d8d64321f945f296e696d8561f68c8186c67"
+  QT_ROOT: C:\Qt
+  DEPS: C:\deps
+  VCPKG_ROOT: C:\vcpkg-nc
+  VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
+  STAGE: C:\stage
+
+jobs:
+  build:
+    name: Windows ARM64
+    runs-on: windows-11-arm
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: arm64
+
+      - name: Environnement MSVC ARM64
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Vérifier l'environnement
+        run: |
+          "Machine : $env:PROCESSOR_ARCHITECTURE"
+          cl 2>&1 | Select-Object -First 1
+          cmake --version | Select-Object -First 1
+          ninja --version
+
+      # ------------------------------------------------------------------ Qt
+      - name: Cache Qt
+        id: cache-qt
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.QT_ROOT }}
+          key: qt-${{ env.QT_VERSION }}-msvc2022_arm64-v1
+
+      - name: Installer Qt ${{ env.QT_VERSION }} ARM64
+        if: steps.cache-qt.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install "aqtinstall==$env:AQT_VERSION"
+          python -m aqt install-qt windows_arm64 desktop $env:QT_VERSION win64_msvc2022_arm64 `
+            -m qt5compat qtwebsockets qtimageformats --outputdir $env:QT_ROOT
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Localiser Qt
+        run: |
+          $qt = Get-ChildItem "$env:QT_ROOT\$env:QT_VERSION" -Directory | Where-Object Name -like "*arm64*" | Select-Object -First 1
+          if (-not $qt) { Get-ChildItem -Recurse -Depth 2 $env:QT_ROOT; throw "Qt ARM64 introuvable" }
+          "QT_DIR=$($qt.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "$($qt.FullName)\bin"   | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          "Qt : $($qt.FullName)"
+
+      # --------------------------------------------------------------- vcpkg
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-arm64-${{ env.VCPKG_COMMIT }}-v1
+
+      - name: Dépendances vcpkg (OpenSSL, zlib, SQLite, pkgconf)
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          git init -q $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT fetch -q --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_COMMIT
+          git -C $env:VCPKG_ROOT checkout -q FETCH_HEAD
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet arm64-windows --host-triplet arm64-windows `
+            openssl zlib sqlite3 pkgconf
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "VCPKG_INST=$env:VCPKG_ROOT\installed\arm64-windows" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ------------------------------------------- Bibliothèques compilées ici
+      - name: Cache des dépendances compilées
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DEPS }}
+          key: deps-${{ env.QT_VERSION }}-kf${{ env.KF_VERSION }}-qk${{ env.QTKEYCHAIN_VERSION }}-kdsa${{ env.KDSA_VERSION }}-p11${{ env.LIBP11_VERSION }}-${{ env.VCPKG_COMMIT }}-v1
+
+      - name: Compiler ECM, KArchive, QtKeychain, KDSingleApplication, libp11
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = "C:\depsrc"; New-Item -ItemType Directory -Force $src | Out-Null
+          $prefix = "$env:QT_DIR;$env:DEPS;$env:VCPKG_INST"
+
+          function Fetch($url, $name) {
+            $file = "$src\$name"
+            Invoke-WebRequest $url -OutFile $file
+            tar -xf $file -C $src
+            if ($LASTEXITCODE) { throw "Extraction de $name impossible" }
+          }
+          function CMakeBuild($dir, [string[]]$extra) {
+            cmake -S $dir -B "$dir\_build" -G Ninja -DCMAKE_BUILD_TYPE=Release `
+              "-DCMAKE_INSTALL_PREFIX=$env:DEPS" "-DCMAKE_PREFIX_PATH=$prefix" -DBUILD_TESTING=OFF @extra
+            if ($LASTEXITCODE) { throw "configure $dir" }
+            cmake --build "$dir\_build"
+            if ($LASTEXITCODE) { throw "build $dir" }
+            cmake --install "$dir\_build"
+            if ($LASTEXITCODE) { throw "install $dir" }
+          }
+
+          $kfMinor = ($env:KF_VERSION -split '\.')[0..1] -join '.'
+
+          # extra-cmake-modules
+          Fetch "https://download.kde.org/stable/frameworks/$kfMinor/extra-cmake-modules-$env:KF_VERSION.tar.xz" "ecm.tar.xz"
+          CMakeBuild "$src\extra-cmake-modules-$env:KF_VERSION" @('-DBUILD_HTML_DOCS=OFF','-DBUILD_MAN_DOCS=OFF','-DBUILD_QTHELP_DOCS=OFF')
+
+          # KArchive (KF6)
+          Fetch "https://download.kde.org/stable/frameworks/$kfMinor/karchive-$env:KF_VERSION.tar.xz" "karchive.tar.xz"
+          CMakeBuild "$src\karchive-$env:KF_VERSION" @('-DWITH_BZIP2=OFF','-DWITH_LIBLZMA=OFF','-DWITH_LIBZSTD=OFF','-DBUILD_QCH=OFF','-DBUILD_PYTHON_BINDINGS=OFF')
+
+          # QtKeychain
+          Fetch "https://github.com/frankosterfeld/qtkeychain/archive/refs/tags/$env:QTKEYCHAIN_VERSION.tar.gz" "qtkeychain.tar.gz"
+          CMakeBuild "$src\qtkeychain-$env:QTKEYCHAIN_VERSION" @('-DBUILD_WITH_QT6=ON','-DBUILD_TRANSLATIONS=OFF','-DBUILD_TEST_APPLICATION=OFF')
+
+          # KDSingleApplication
+          Fetch "https://github.com/KDAB/KDSingleApplication/releases/download/v$env:KDSA_VERSION/kdsingleapplication-$env:KDSA_VERSION.tar.gz" "kdsa.tar.gz"
+          CMakeBuild "$src\KDSingleApplication-$env:KDSA_VERSION" @('-DKDSingleApplication_QT6=ON','-DKDSingleApplication_EXAMPLES=OFF','-DKDSingleApplication_TESTS=OFF')
+
+          # libp11 (nmake, comme la recette officielle de Nextcloud, mais en ARM64)
+          Fetch "https://github.com/OpenSC/libp11/releases/download/libp11-$env:LIBP11_VERSION/libp11-$env:LIBP11_VERSION.tar.gz" "libp11.tar.gz"
+          Push-Location "$src\libp11-$env:LIBP11_VERSION"
+          nmake /nologo /f Makefile.mak "OPENSSL_DIR=$env:VCPKG_INST" BUILD_FOR=WIN64 "MACHINE=/MACHINE:ARM64"
+          if ($LASTEXITCODE) { throw "libp11" }
+          New-Item -ItemType Directory -Force "$env:DEPS\bin","$env:DEPS\lib\pkgconfig","$env:DEPS\include" | Out-Null
+          Copy-Item src\libp11.dll, src\pkcs11.dll "$env:DEPS\bin"
+          Copy-Item src\libp11.lib, src\pkcs11.lib "$env:DEPS\lib"
+          Copy-Item src\libp11.h, src\p11_err.h, src\p11_ver.h "$env:DEPS\include" -ErrorAction SilentlyContinue
+          $pc = (Get-Content src\libp11.pc.in -Raw)
+          $pc = $pc.Replace('@prefix@', $env:DEPS.Replace('\','/')).Replace('@exec_prefix@','${prefix}')
+          $pc = $pc.Replace('@libdir@','${prefix}/lib').Replace('@includedir@','${prefix}/include')
+          $pc = $pc.Replace('@VERSION@', $env:LIBP11_VERSION).Replace('-lp11','-llibp11')
+          Set-Content "$env:DEPS\lib\pkgconfig\libp11.pc" $pc -Encoding ascii
+          Pop-Location
+
+      # ------------------------------------------------------------- Outils
+      - name: Installer Inkscape et Inno Setup
+        run: |
+          choco install inkscape innosetup -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem "C:\Program Files\Inkscape\bin\inkscape*.exe"
+
+      # ---------------------------------------------------------- Nextcloud
+      - name: Récupérer le code source Nextcloud ${{ env.NC_VERSION }}
+        run: |
+          git clone -q --depth 1 --branch $env:NC_VERSION https://github.com/nextcloud/desktop.git C:\nc
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git -C C:\nc log -1 --oneline
+
+      - name: Configurer
+        run: |
+          $env:PKG_CONFIG_PATH = "$env:DEPS\lib\pkgconfig;$env:VCPKG_INST\lib\pkgconfig"
+          $pkgconf = Get-ChildItem "$env:VCPKG_INST\tools\pkgconf\pkgconf.exe" | Select-Object -First 1
+          cmake -S C:\nc -B C:\nc-build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_INSTALL_PREFIX=$env:STAGE" `
+            "-DCMAKE_PREFIX_PATH=$env:QT_DIR;$env:DEPS;$env:VCPKG_INST" `
+            "-DPKG_CONFIG_EXECUTABLE=$($pkgconf.FullName)" `
+            "-DIcoTool_EXECUTABLE=${{ github.workspace }}\tools\icotool.cmd" `
+            -DBUILD_TESTING=OFF `
+            -DBUILD_UPDATER=OFF
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Compiler
+        run: |
+          cmake --build C:\nc-build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --install C:\nc-build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Assembler le paquet
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pkg = "C:\package"
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+
+          # Binaires du client à la racine
+          Copy-Item "$env:STAGE\bin\*" $pkg -Recurse -Force
+          # Plugins VFS (fichiers virtuels Windows) : chargés depuis le dossier de l'application
+          Get-ChildItem $env:STAGE -Recurse -Filter "nextcloudsync_vfs_*.dll" | Copy-Item -Destination $pkg -Force
+          # Traductions : le client les cherche dans <app>\i18n
+          if (Test-Path "$env:STAGE\i18n") { Copy-Item "$env:STAGE\i18n" $pkg -Recurse -Force }
+          New-Item -ItemType Directory -Force "$pkg\i18n" | Out-Null
+          Get-ChildItem "$env:QT_DIR\translations" -Include qt_*.qm,qtbase_*.qm -Recurse | Copy-Item -Destination "$pkg\i18n" -Force
+          Copy-Item C:\nc\sync-exclude.lst $pkg -Force
+          Copy-Item C:\nc\COPYING "$pkg\COPYING.txt" -Force
+          Get-ChildItem C:\nc-build -Recurse -Filter "Nextcloud.ico" | Select-Object -First 1 | Copy-Item -Destination "$pkg\Nextcloud.ico"
+          if (-not (Test-Path "$pkg\Nextcloud.ico")) { throw "Nextcloud.ico introuvable" }
+
+          # Bibliothèques tierces
+          Copy-Item "$env:DEPS\bin\*.dll" $pkg -Force
+          Copy-Item "$env:VCPKG_INST\bin\*.dll" $pkg -Force
+
+          # Qt (DLL, plugins, QML)
+          $bins = @("$pkg\nextcloud.exe")
+          if (Test-Path "$pkg\nextcloudcmd.exe") { $bins += "$pkg\nextcloudcmd.exe" }
+          $bins += (Get-ChildItem $pkg -Filter "nextcloud*.dll").FullName
+          windeployqt --release --no-compiler-runtime --no-translations `
+            --qmldir C:\nc\src\gui --dir $pkg @bins
+          if ($LASTEXITCODE) { throw "windeployqt" }
+
+          # Runtime Visual C++ ARM64 (déploiement local, pas besoin de vc_redist)
+          $crt = Get-ChildItem "$env:VCToolsRedistDir\arm64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          Copy-Item "$($crt.FullName)\*.dll" $pkg -Force
+
+          # Nettoyage
+          Get-ChildItem $pkg -Recurse -Include *.pdb,*.lib,*.exp | Remove-Item -Force
+
+          # Contrôle : tous les .exe/.dll doivent être ARM64 (machine 0xAA64)
+          $bad = @()
+          foreach ($f in Get-ChildItem $pkg -Recurse -Include *.exe,*.dll) {
+            $b = [IO.File]::ReadAllBytes($f.FullName)
+            $pe = [BitConverter]::ToInt32($b, 0x3C)
+            $machine = [BitConverter]::ToUInt16($b, $pe + 4)
+            if ($machine -ne 0xAA64) { $bad += "{0} (0x{1:X4})" -f $f.FullName, $machine }
+          }
+          if ($bad) { $bad; throw "Binaires non ARM64 détectés" }
+          "Paquet OK : $((Get-ChildItem $pkg -Recurse -File).Count) fichiers, tous ARM64"
+
+      - name: Test de démarrage
+        run: |
+          & C:\package\nextcloudcmd.exe --version
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Créer l'installateur
+        run: |
+          $ver = $env:NC_VERSION.TrimStart('v')
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$ver" "/DSourceDir=C:\package" `
+            "/DOutputDir=${{ github.workspace }}\out" installer\nextcloud-arm64.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Compress-Archive C:\package\* "${{ github.workspace }}\out\Nextcloud-$ver-arm64-portable.zip"
+          Get-ChildItem out | ForEach-Object { "{0}  {1:N1} Mo" -f $_.Name, ($_.Length / 1MB) }
+          Get-FileHash out\* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content out\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nextcloud-${{ env.NC_VERSION }}-windows-arm64
+          path: out/*
+
+      - name: Publier la Release
+        if: github.event_name == 'workflow_dispatch' && inputs.release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "$env:NC_VERSION-arm64"
+          $notes = @"
+          Client de bureau Nextcloud **$env:NC_VERSION** compilé nativement pour **Windows 11 ARM64**
+          à partir du code source officiel (https://github.com/nextcloud/desktop/releases/tag/$env:NC_VERSION).
+
+          - ``Nextcloud-*-arm64-setup.exe`` : installateur
+          - ``Nextcloud-*-arm64-portable.zip`` : version sans installation
+
+          Build non officiel et non signé : Windows SmartScreen affichera un avertissement
+          (« Informations complémentaires » > « Exécuter quand même »).
+          "@
+          gh release delete $tag --yes --cleanup-tag 2>$null
+          gh release create $tag (Get-ChildItem out\*).FullName --title "Nextcloud $env:NC_VERSION ARM64" --notes $notes
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
