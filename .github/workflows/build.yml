@@ -315,11 +315,16 @@ jobs:
           path: out/*
 
       - name: Publier la Release
-        if: github.event_name == 'workflow_dispatch' && inputs.release
+        # Manuel : si « release » est coché. Push sur main : seulement si cette version n'est pas encore publiée.
+        if: (github.event_name == 'workflow_dispatch' && inputs.release) || github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "$env:NC_VERSION-arm64"
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            gh release view $tag 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { "Release $tag déjà publiée : rien à faire."; exit 0 }
+          }
           $notes = @"
           Client de bureau Nextcloud **$env:NC_VERSION** compilé nativement pour **Windows 11 ARM64**
           à partir du code source officiel (https://github.com/nextcloud/desktop/releases/tag/$env:NC_VERSION).
