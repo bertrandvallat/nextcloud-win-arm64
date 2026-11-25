@@ -38,7 +38,7 @@ env:
   VCPKG_COMMIT: "7281d8d64321f945f296e696d8561f68c8186c67"
   QT_ROOT: C:\Qt
   DEPS: C:\deps
-  VCPKG_ROOT: C:\vcpkg-nc
+  NC_VCPKG: C:\vcpkg-nc
   VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
   STAGE: C:\stage
 
@@ -105,14 +105,14 @@ jobs:
       - name: Dépendances vcpkg (OpenSSL, zlib, SQLite, pkgconf)
         run: |
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          git init -q $env:VCPKG_ROOT
-          git -C $env:VCPKG_ROOT fetch -q --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_COMMIT
-          git -C $env:VCPKG_ROOT checkout -q FETCH_HEAD
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
-          & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet arm64-windows --host-triplet arm64-windows `
+          git init -q $env:NC_VCPKG
+          git -C $env:NC_VCPKG fetch -q --depth 1 https://github.com/microsoft/vcpkg $env:VCPKG_COMMIT
+          git -C $env:NC_VCPKG checkout -q FETCH_HEAD
+          & "$env:NC_VCPKG\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:NC_VCPKG\vcpkg.exe" install --triplet arm64-windows --host-triplet arm64-windows `
             openssl zlib sqlite3 pkgconf
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          "VCPKG_INST=$env:VCPKG_ROOT\installed\arm64-windows" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "VCPKG_INST=$env:NC_VCPKG\installed\arm64-windows" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
       # ------------------------------------------- Bibliothèques compilées ici
       - name: Cache des dépendances compilées
