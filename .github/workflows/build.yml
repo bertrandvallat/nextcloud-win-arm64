@@ -166,14 +166,15 @@ jobs:
 
           # libp11 (nmake, comme la recette officielle de Nextcloud, mais en ARM64)
           Fetch "https://github.com/OpenSC/libp11/releases/download/libp11-$env:LIBP11_VERSION/libp11-$env:LIBP11_VERSION.tar.gz" "libp11.tar.gz"
-          Push-Location "$src\libp11-$env:LIBP11_VERSION"
-          nmake /nologo /f Makefile.mak "OPENSSL_DIR=$env:VCPKG_INST" BUILD_FOR=WIN64 "MACHINE=/MACHINE:ARM64"
+          Push-Location "$src\libp11-$env:LIBP11_VERSION\src"
+          # nmake directement dans src : le Makefile racine ne transmet pas MACHINE au sous-make
+          nmake /nologo /f Makefile.mak "OPENSSL_DIR=$env:VCPKG_INST" "MACHINE=/MACHINE:ARM64" all
           if ($LASTEXITCODE) { throw "libp11" }
           New-Item -ItemType Directory -Force "$env:DEPS\bin","$env:DEPS\lib\pkgconfig","$env:DEPS\include" | Out-Null
-          Copy-Item src\libp11.dll, src\pkcs11.dll "$env:DEPS\bin"
-          Copy-Item src\libp11.lib, src\pkcs11.lib "$env:DEPS\lib"
-          Copy-Item src\libp11.h, src\p11_err.h, src\p11_ver.h "$env:DEPS\include" -ErrorAction SilentlyContinue
-          $pc = (Get-Content src\libp11.pc.in -Raw)
+          Copy-Item libp11.dll, pkcs11.dll "$env:DEPS\bin"
+          Copy-Item libp11.lib, pkcs11.lib "$env:DEPS\lib"
+          Copy-Item libp11.h, p11_err.h, p11_ver.h "$env:DEPS\include" -ErrorAction SilentlyContinue
+          $pc = (Get-Content libp11.pc.in -Raw)
           $pc = $pc.Replace('@prefix@', $env:DEPS.Replace('\','/')).Replace('@exec_prefix@','${prefix}')
           $pc = $pc.Replace('@libdir@','${prefix}/lib').Replace('@includedir@','${prefix}/include')
           $pc = $pc.Replace('@VERSION@', $env:LIBP11_VERSION).Replace('-lp11','-llibp11')
