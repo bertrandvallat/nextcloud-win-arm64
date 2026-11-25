@@ -267,6 +267,8 @@ jobs:
           $bins += (Get-ChildItem $pkg -Filter "nextcloud*.dll").FullName
           # windeployqt doit trouver les DLL tierces (qt6keychain, KF6Archive...) via le PATH
           $env:PATH = "$pkg;$env:DEPS\bin;$env:VCPKG_INST\bin;$env:PATH"
+          # windeployqt prend qt6keychain.dll pour un module Qt (préfixe « qt6 ») et le cherche dans Qt\bin
+          Copy-Item "$env:DEPS\bin\qt6keychain.dll" "$env:QT_DIR\bin" -Force
           windeployqt --release --no-compiler-runtime --no-translations `
             --qmldir C:\nc\src\gui --dir $pkg @bins
           if ($LASTEXITCODE) { throw "windeployqt" }
